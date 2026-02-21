@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Station Météo Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .glass {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        body {
+            background: #0f172a;
+            color: #f8fafc;
+        }
+        .status-dot {
+            height: 10px;
+            width: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8">
+
+    <div class="max-w-2xl mx-auto space-y-6">
+        <!-- Header -->
+        <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-900/80 p-6 rounded-3xl border border-slate-800 shadow-2xl">
+            <div>
+                <h1 class="text-2xl font-black tracking-tight text-white">STATION MÉTÉO</h1>
+                <div class="flex items-center gap-2 mt-1">
+                    <span id="statusDot" class="status-dot bg-red-500"></span>
+                    <span id="statusText" class="text-xs font-medium text-slate-400 uppercase tracking-widest">Déconnecté</span>
+                </div>
+            </div>
+            <button id="connectBtn" class="w-full sm:w-auto bg-blue-600 hover:bg-blue-500 text-white px-8 py-3 rounded-2xl transition-all font-bold shadow-lg shadow-blue-900/20 active:scale-95">
+                CONNEXION
+            </button>
+        </header>
+
+        <!-- Grille des données -->
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div class="glass p-6 rounded-3xl text-center">
+                <p class="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2">Température</p>
+                <p id="tempVal" class="text-4xl font-black text-blue-400">--°C</p>
+            </div>
+            <div class="glass p-6 rounded-3xl text-center">
+                <p class="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2">Luminosité</p>
+                <p id="lumVal" class="text-4xl font-black text-yellow-400">--%</p>
+            </div>
+            <div class="glass p-6 rounded-3xl text-center">
+                <p class="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2">Qualité Air</p>
+                <p id="gasVal" class="text-4xl font-black text-emerald-400">---</p>
+            </div>
+        </div>
+
+        <!-- Graphique -->
+        <div class="glass p-6 rounded-3xl">
+            <p class="text-slate-400 text-xs font-bold uppercase tracking-widest mb-6 text-center">Suivi Température</p>
+            <div class="h-64">
+                <canvas id="tempChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Contrôles -->
+        <div class="glass p-8 rounded-3xl space-y-6">
+            <div class="flex items-center gap-3">
+                <div class="p-2 bg-blue-600/20 rounded-lg text-blue-400 text-xl">⚙️</div>
+                <h2 class="text-lg font-bold">Paramètres de rafraîchissement</h2>
+            </div>
+            
+            <div class="flex flex-col sm:flex-row gap-4">
+                <input type="number" id="refreshInput" value="2000" min="500" step="500" 
+                       class="flex-1 bg-slate-950 border border-slate-800 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-lg text-blue-400">
+                <button id="sendIntervalBtn" class="bg-slate-100 hover:bg-white text-slate-900 px-8 py-4 rounded-2xl font-black transition-all active:scale-95 uppercase text-sm tracking-tighter">
+                    Appliquer
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let device, characteristic;
+        let readBuffer = "";
+        
+        // Config Graphique
+        const ctx = document.getElementById('tempChart').getContext('2d');
+        const tempChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    data: [],
+                    borderColor: '#3b82f6',
+                    borderWidth: 4,
+                    pointRadius: 0,
+                    tension: 0.4,
+                    fill: true,
+                    backgroundColor: (context) => {
+                        const gradient = context.chart.ctx.createLinearGradient(0, 0, 0, 400);
+                        gradient.addColorStop(0, 'rgba(59, 130, 246, 0.3)');
+                        gradient.addColorStop(1, 'rgba(59, 130, 246, 0)');
+                        return gradient;
+                    }
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { display: false },
+                    y: { grid: { color: '#1e293b' }, ticks: { color: '#64748b', font: { weight: 'bold' } } }
+                }
+            }
+        });
+
+        // Connexion
+        document.getElementById('connectBtn').addEventListener('click', async () => {
+            try {
+                device = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: [0xFFE0] }],
+                    optionalServices: [0xFFE0]
+                });
+
+                const server = await device.gatt.connect();
+                const service = await server.getPrimaryService(0xFFE0);
+                characteristic = await service.getCharacteristic(0xFFE1);
+
+                await characteristic.startNotifications();
+                characteristic.addEventListener('characteristicvaluechanged', (event) => {
+                    const decoder = new TextDecoder();
+                    const chunk = decoder.decode(event.target.value);
+                    readBuffer += chunk;
+
+                    // Si on reçoit un saut de ligne, on traite la donnée complète
+                    if (readBuffer.includes('\n')) {
+                        const lines = readBuffer.split('\n');
+                        const lastData = lines[lines.length - 2]; // On prend la dernière ligne complète
+                        processData(lastData);
+                        readBuffer = lines[lines.length - 1]; // On garde le reste pour plus tard
+                    }
+                });
+
+                document.getElementById('statusDot').classList.replace('bg-red-500', 'bg-green-500');
+                document.getElementById('statusText').innerText = "Connecté : " + device.name;
+                document.getElementById('connectBtn').innerText = "DÉCONNECTER";
+                
+                device.addEventListener('gattserverdisconnected', () => location.reload());
+
+            } catch (err) {
+                alert("Erreur: " + err.message);
+            }
+        });
+
+        function processData(raw) {
+            const data = raw.trim().split(',');
+            if (data.length >= 3) {
+                const temp = parseFloat(data[0]);
+                const lum = data[1];
+                const gas = data[2];
+
+                document.getElementById('tempVal').innerText = temp.toFixed(1) + "°C";
+                document.getElementById('lumVal').innerText = lum + "%";
+                document.getElementById('gasVal').innerText = gas;
+
+                // Update Chart
+                const now = new Date().toLocaleTimeString();
+                tempChart.data.labels.push(now);
+                tempChart.data.datasets[0].data.push(temp);
+                if (tempChart.data.labels.length > 20) {
+                    tempChart.data.labels.shift();
+                    tempChart.data.datasets[0].data.shift();
+                }
+                tempChart.update();
+            }
+        }
+
+        // Envoi de l'intervalle
+        document.getElementById('sendIntervalBtn').addEventListener('click', async () => {
+            if (!characteristic) return alert("Connectez le Bluetooth d'abord !");
+            const val = document.getElementById('refreshInput').value;
+            const encoder = new TextEncoder();
+            // On envoie le nombre suivi de \n pour que l'Arduino le capte bien
+            await characteristic.writeValue(encoder.encode(val + "\n"));
+            alert("Nouvel intervalle envoyé : " + val + " ms");
+        });
+    </script>
+</body>
+</html>
